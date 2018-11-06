@@ -8,7 +8,7 @@ np.set_printoptions(threshold=np.nan)
 
 class DisconnectError(Exception):
     """
-
+    An error class to catch if the graph has unconnected regions.
     """
 
     def __init__(self, message):
@@ -17,19 +17,21 @@ class DisconnectError(Exception):
 
 class MaximumVarianceUnfolding:
 
-    def __init__(self, equation="berkley", solver=cp.SCS, solver_tol=1e-2, neg_tol=-1.0e-10, seed=None):
+    def __init__(self, equation="berkley", solver=cp.SCS, solver_tol=1e-2, eig_tol=1.0e-10, seed=None):
         """
-        STUB
-        :param equation:
-        :param solver:
-        :param solver_tol:
-        :param neg_tol:
-        :param seed:
+
+        :param equation: A string either "berkley" or "wikipedia" to represent
+                         two different equations for the same problem.
+        :param solver: A CVXPY solver object.
+        :param solver_tol: A float representing the tolerance the solver uses to know when to stop.
+        :param eig_tol: The positive semi-definite constraint is only so accurate, this sets
+                        eigenvalues that lie in -eig_tol < 0 < eig_tol to 0.
+        :param seed: The numpy seed for random numbers.
         """
         self.equation = equation
         self.solver = solver
         self.solver_tol = solver_tol
-        self.neg_tol = neg_tol
+        self.eig_tol = eig_tol
         self.seed = seed
 
     def fit(self, data, k, dropout_rate=.2):
@@ -180,7 +182,7 @@ class MaximumVarianceUnfolding:
         # Decompose gramian to recover the projection
         eigenvalues, eigenvectors = np.linalg.eig(embedded_gramian)
 
-        eigenvalues[np.logical_and(self.neg_tol < eigenvalues, eigenvalues < 0.)] = 0.
+        eigenvalues[np.logical_and(-self.eig_tol < eigenvalues, eigenvalues < self.eig_tol)] = 0.
 
         sorted_indices = eigenvalues.argsort()[::-1]
         top_eigenvalue_indices = sorted_indices[:dim]
