@@ -17,7 +17,8 @@ class DisconnectError(Exception):
 
 class MaximumVarianceUnfolding:
 
-    def __init__(self, equation="berkley", solver=cp.SCS, solver_tol=1e-2, eig_tol=1.0e-10, seed=None):
+    def __init__(self, equation="berkley", solver=cp.SCS, solver_tol=1e-2, eig_tol=1.0e-10, solver_iters=2500,
+                 seed=None):
         """
 
         :param equation: A string either "berkley" or "wikipedia" to represent
@@ -26,12 +27,14 @@ class MaximumVarianceUnfolding:
         :param solver_tol: A float representing the tolerance the solver uses to know when to stop.
         :param eig_tol: The positive semi-definite constraint is only so accurate, this sets
                         eigenvalues that lie in -eig_tol < 0 < eig_tol to 0.
+        :param solver_iters: The max number of iterations the solver will go through.
         :param seed: The numpy seed for random numbers.
         """
         self.equation = equation
         self.solver = solver
         self.solver_tol = solver_tol
         self.eig_tol = eig_tol
+        self.solver_iters = solver_iters
         self.seed = seed
 
     def fit(self, data, k, dropout_rate=.2):
@@ -52,6 +55,11 @@ class MaximumVarianceUnfolding:
         # Calculate the nearest neighbors of each data point and build a graph
         N = NearestNeighbors(n_neighbors=k).fit(data).kneighbors_graph(data).todense()
         N = np.array(N)
+
+        for i in range(n):
+            for j in range(n):
+                if N[i, j] == 1 and np.random.random() < dropout_rate:
+                    N[i, j] = 0.
 
         # To check for disconnected regions in the neighbor graph
         lap = laplacian(N, normed=True)
@@ -94,14 +102,14 @@ class MaximumVarianceUnfolding:
             constraints = [Q >> 0, cp.sum(Q, axis=1) == 0]
             for i in range(n):
                 for j in range(n):
-                    if N[i, j] == 1. and np.random.random() > dropout_rate:
+                    if N[i, j] == 1.:
                         constraints.append(Q[i, i] - 2 * Q[i, j] + Q[j, j] -
                                            (P[i, i] - 2 * P[i, j] + P[j, j]) == 0)
 
         # Solve the problem with the SCS Solver
         problem = cp.Problem(objective, constraints)
         # FIXME The solvertol syntax is unique to SCS
-        problem.solve(solver=self.solver, eps=self.solver_tol)
+        problem.solve(solver=self.solver, eps=self.solver_tol, max_iters=self.solver_iters, warm_start=True)
 
         return Q.value
 
@@ -126,12 +134,18 @@ class MaximumVarianceUnfolding:
         N = NearestNeighbors(n_neighbors=k).fit(data).kneighbors_graph(data).todense()
         N = np.array(N)
 
+        for i in range(n):
+            for j in range(n):
+                if N[i, j] == 1 and np.random.random() < dropout_rate:
+                    N[i, j] = 0.
+
         # To check for disconnected regions in the neighbor graph
         lap = laplacian(N, normed=True)
         eigvals, _ = np.linalg.eig(lap)
 
         for e in eigvals:
             if e == 0.:
+                # print("DisconnectError")
                 raise DisconnectError("FATAL ERROR DISCONNECTED REGIONS IN NEIGHBORHOOD GRAPH")
 
         # Declare some CVXPy variables
@@ -167,31 +181,31 @@ class MaximumVarianceUnfolding:
             constraints = [Q >> 0, cp.sum(Q, axis=1) == 0]
             for i in range(n):
                 for j in range(n):
-                    if N[i, j] == 1. and np.random.random() > dropout_rate:
+                    if N[i, j] == 1.:
                         constraints.append(Q[i, i] - 2 * Q[i, j] + Q[j, j] -
                                            (P[i, i] - 2 * P[i, j] + P[j, j]) == 0)
 
         # Solve the problem with the SCS Solver
         problem = cp.Problem(objective, constraints)
         # FIXME The solvertol syntax is unique to SCS
-        problem.solve(solver=self.solver, eps=self.solver_tol)
+        problem.solve(solver=self.solver, eps=self.solver_tol, max_iters=self.solver_iters)
 
         # Retrieve Q
         embedded_gramian = Q.value
 
         # Decompose gramian to recover the projection
         eigenvalues, eigenvectors = np.linalg.eig(embedded_gramian)
-
+        print(eigenvectors.shape)
         eigenvalues[np.logical_and(-self.eig_tol < eigenvalues, eigenvalues < self.eig_tol)] = 0.
 
         sorted_indices = eigenvalues.argsort()[::-1]
         top_eigenvalue_indices = sorted_indices[:dim]
 
         top_eigenvalues = eigenvalues[top_eigenvalue_indices]
-        top_eigenvectors = eigenvectors[top_eigenvalue_indices, :]
+        top_eigenvectors = eigenvectors[:, top_eigenvalue_indices]
 
         lbda = np.diag(top_eigenvalues ** 0.5)
 
-        embedded_data = lbda.dot(top_eigenvectors).T
+        embedded_data = lbda.dot(top_eigenvectors.T).T
 
         return embedded_data
