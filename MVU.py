@@ -17,8 +17,8 @@ class DisconnectError(Exception):
 
 class MaximumVarianceUnfolding:
 
-    def __init__(self, equation="berkley", solver=cp.SCS, solver_tol=1e-2, eig_tol=1.0e-10, solver_iters=2500,
-                 seed=None):
+    def __init__(self, equation="berkley", solver=cp.SCS, solver_tol=1e-2,
+                 eig_tol=1.0e-10, solver_iters=None, warm_start=False, seed=None):
         """
 
         :param equation: A string either "berkley" or "wikipedia" to represent
@@ -28,6 +28,8 @@ class MaximumVarianceUnfolding:
         :param eig_tol: The positive semi-definite constraint is only so accurate, this sets
                         eigenvalues that lie in -eig_tol < 0 < eig_tol to 0.
         :param solver_iters: The max number of iterations the solver will go through.
+        :param warm_start: Whether or not to use a warm start for the solver.
+                           Useful if you are running multiple tests on the same data.
         :param seed: The numpy seed for random numbers.
         """
         self.equation = equation
@@ -35,6 +37,7 @@ class MaximumVarianceUnfolding:
         self.solver_tol = solver_tol
         self.eig_tol = eig_tol
         self.solver_iters = solver_iters
+        self.warm_start = warm_start
         self.seed = seed
 
     def fit(self, data, k, dropout_rate=.2):
@@ -56,6 +59,9 @@ class MaximumVarianceUnfolding:
         N = NearestNeighbors(n_neighbors=k).fit(data).kneighbors_graph(data).todense()
         N = np.array(N)
 
+        # Randomly drop certain connections.
+        # Not the most efficient way but with this implementation random
+        #  cuts that disconnect the graph will be caught.
         for i in range(n):
             for j in range(n):
                 if N[i, j] == 1 and np.random.random() < dropout_rate:
@@ -66,17 +72,21 @@ class MaximumVarianceUnfolding:
         eigvals, _ = np.linalg.eig(lap)
 
         for e in eigvals:
-            if e == 0.:
-                raise DisconnectError("FATAL ERROR DISCONNECTED REGIONS IN NEIGHBORHOOD GRAPH")
+            if e == 0. and self.solver_iters is None:
+                raise DisconnectError("DISCONNECTED REGIONS IN NEIGHBORHOOD GRAPH.\n"
+                                      "PLEASE SPECIFY MAX ITERATIONS FOR THE SOLVER")
 
         # Declare some CVXPy variables
-        P = cp.Constant(data.dot(data.T))  # Gramian of the original data
-
-        Q = cp.Variable((n, n), PSD=True)  # The projection of the Gramian
-        Q.value = np.zeros((n, n))  # Initialized to zeros
-
-        ONES = cp.Constant(np.ones((n, 1)))  # A shorter way to call a vector of 1's
-        T = cp.Constant(n)  # A variable to keep the notation consistent with the Berkley lecture
+        # Gramian of the original data
+        P = cp.Constant(data.dot(data.T))
+        # The projection of the Gramian
+        Q = cp.Variable((n, n), PSD=True)
+        # Initialized to zeros
+        Q.value = np.zeros((n, n))
+        # A shorter way to call a vector of 1's
+        ONES = cp.Constant(np.ones((n, 1)))
+        # A variable to keep the notation consistent with the Berkley lecture
+        T = cp.Constant(n)
 
         # Declare placeholders to get rid of annoying warnings
         objective = None
@@ -109,7 +119,10 @@ class MaximumVarianceUnfolding:
         # Solve the problem with the SCS Solver
         problem = cp.Problem(objective, constraints)
         # FIXME The solvertol syntax is unique to SCS
-        problem.solve(solver=self.solver, eps=self.solver_tol, max_iters=self.solver_iters, warm_start=True)
+        problem.solve(solver=self.solver,
+                      eps=self.solver_tol,
+                      max_iters=self.solver_iters,
+                      warm_start=self.warm_start)
 
         return Q.value
 
@@ -134,6 +147,9 @@ class MaximumVarianceUnfolding:
         N = NearestNeighbors(n_neighbors=k).fit(data).kneighbors_graph(data).todense()
         N = np.array(N)
 
+        # Randomly drop certain connections.
+        # Not the most efficient way but with this implementation random
+        #  cuts that disconnect the graph will be caught.
         for i in range(n):
             for j in range(n):
                 if N[i, j] == 1 and np.random.random() < dropout_rate:
@@ -144,18 +160,21 @@ class MaximumVarianceUnfolding:
         eigvals, _ = np.linalg.eig(lap)
 
         for e in eigvals:
-            if e == 0.:
-                # print("DisconnectError")
-                raise DisconnectError("FATAL ERROR DISCONNECTED REGIONS IN NEIGHBORHOOD GRAPH")
+            if e == 0. and self.solver_iters is None:
+                raise DisconnectError("DISCONNECTED REGIONS IN NEIGHBORHOOD GRAPH.\n"
+                                      "PLEASE SPECIFY MAX ITERATIONS FOR THE SOLVER")
 
         # Declare some CVXPy variables
-        P = cp.Constant(data.dot(data.T))  # Gramian of the original data
-
-        Q = cp.Variable((n, n), PSD=True)  # The projection of the Gramian
-        Q.value = np.zeros((n, n))  # Initialized to zeros
-
-        ONES = cp.Constant(np.ones((n, 1)))  # A shorter way to call a vector of 1's
-        T = cp.Constant(n)  # A variable to keep the notation consistent with the Berkley lecture
+        # Gramian of the original data
+        P = cp.Constant(data.dot(data.T))
+        # The projection of the Gramian
+        Q = cp.Variable((n, n), PSD=True)
+        # Initialized to zeros
+        Q.value = np.zeros((n, n))
+        # A shorter way to call a vector of 1's
+        ONES = cp.Constant(np.ones((n, 1)))
+        # A variable to keep the notation consistent with the Berkley lecture
+        T = cp.Constant(n)
 
         # Declare placeholders to get rid of annoying warnings
         objective = None
@@ -188,24 +207,31 @@ class MaximumVarianceUnfolding:
         # Solve the problem with the SCS Solver
         problem = cp.Problem(objective, constraints)
         # FIXME The solvertol syntax is unique to SCS
-        problem.solve(solver=self.solver, eps=self.solver_tol, max_iters=self.solver_iters)
+        problem.solve(solver=self.solver,
+                      eps=self.solver_tol,
+                      max_iters=self.solver_iters,
+                      warm_start=self.warm_start)
 
         # Retrieve Q
         embedded_gramian = Q.value
 
         # Decompose gramian to recover the projection
         eigenvalues, eigenvectors = np.linalg.eig(embedded_gramian)
-        print(eigenvectors.shape)
+
+        # Set the eigenvalues that are within +/- eig_tol to 0
         eigenvalues[np.logical_and(-self.eig_tol < eigenvalues, eigenvalues < self.eig_tol)] = 0.
 
+        # Assuming the eigenvalues and eigenvectors aren't sorted,
+        #    sort them and get the top "dim" ones
         sorted_indices = eigenvalues.argsort()[::-1]
         top_eigenvalue_indices = sorted_indices[:dim]
 
+        # Take the top eigenvalues and eigenvectors
         top_eigenvalues = eigenvalues[top_eigenvalue_indices]
         top_eigenvectors = eigenvectors[:, top_eigenvalue_indices]
 
+        # Some quick math to get the projection and return it
         lbda = np.diag(top_eigenvalues ** 0.5)
-
         embedded_data = lbda.dot(top_eigenvectors.T).T
 
         return embedded_data
