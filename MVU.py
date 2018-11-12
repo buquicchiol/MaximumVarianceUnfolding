@@ -17,12 +17,13 @@ class DisconnectError(Exception):
 
 class MaximumVarianceUnfolding:
 
-    def __init__(self, equation="berkley", solver=cp.SCS, solver_tol=1e-2,
-                 eig_tol=1.0e-10, solver_iters=None, warm_start=False, seed=None):
+    def __init__(self, equation="berkley", landmark=None, solver=cp.SCS, solver_tol=1e-2,
+                 eig_tol=1.0e-10, solver_iters=2500, warm_start=False, seed=None):
         """
 
         :param equation: A string either "berkley" or "wikipedia" to represent
                          two different equations for the same problem.
+        :param landmark: None if you do not want to use landmark MVU, otherwise the number of landmarks to consider.
         :param solver: A CVXPY solver object.
         :param solver_tol: A float representing the tolerance the solver uses to know when to stop.
         :param eig_tol: The positive semi-definite constraint is only so accurate, this sets
@@ -33,6 +34,7 @@ class MaximumVarianceUnfolding:
         :param seed: The numpy seed for random numbers.
         """
         self.equation = equation
+        self.landmark = landmark
         self.solver = solver
         self.solver_tol = solver_tol
         self.eig_tol = eig_tol
@@ -55,17 +57,56 @@ class MaximumVarianceUnfolding:
         # Set the seed
         np.random.seed(self.seed)
 
-        # Calculate the nearest neighbors of each data point and build a graph
-        N = NearestNeighbors(n_neighbors=k).fit(data).kneighbors_graph(data).todense()
-        N = np.array(N)
+        if self.landmark is not None:
+            # Calculate the nearest neighbors of each data point and build a graph
+            N = NearestNeighbors(n_neighbors=k).fit(data).kneighbors_graph(data).todense()
+            N = np.array(N)
 
-        # Randomly drop certain connections.
-        # Not the most efficient way but with this implementation random
-        #  cuts that disconnect the graph will be caught.
-        for i in range(n):
-            for j in range(n):
-                if N[i, j] == 1 and np.random.random() < dropout_rate:
-                    N[i, j] = 0.
+            # Sort the neighbor graph to find the points with the most connections
+            num_connections = N.sum(axis=0).argsort()[::-1]
+
+            # Separate the most popular points
+            top_landmarks_idxs = num_connections[:self.landmark]
+            top_landmarks = data[top_landmarks_idxs, :]
+
+            # Compute the nearest neighbors for all of the landmarks so they are all connected
+            L = NearestNeighbors(n_neighbors=3).fit(top_landmarks).kneighbors_graph(top_landmarks).todense()
+            L = np.array(L)
+
+            # The data without the landmarks
+            new_data_idxs = [x for x in list(range(n)) if x not in top_landmarks_idxs]
+            new_data = np.delete(data, top_landmarks_idxs, axis=0)
+
+            # Construct a neighborhood graph where each point finds its closest landmark
+            l = NearestNeighbors(n_neighbors=2).fit(top_landmarks).kneighbors_graph(new_data).todense()
+            l = np.array(l)
+
+            N = np.zeros((n, n))
+
+            for i in range(self.landmark):
+                for j in range(self.landmark):
+                    if L[i, j] == 1.:
+                        N[top_landmarks_idxs[i], top_landmarks_idxs[j]] = 1.
+
+            for i in range(n - self.landmark):
+                for j in range(self.landmark):
+                    if l[i, j] == 1.:
+                        N[new_data_idxs[i], top_landmarks_idxs[j]] = 1.
+
+
+        # Note dropout will not be done if landmark is used
+        else:
+            # Calculate the nearest neighbors of each data point and build a graph
+            N = NearestNeighbors(n_neighbors=k).fit(data).kneighbors_graph(data).todense()
+            N = np.array(N)
+
+            # Randomly drop certain connections.
+            # Not the most efficient way but with this implementation random
+            #  cuts that disconnect the graph will be caught.
+            for i in range(n):
+                for j in range(n):
+                    if N[i, j] == 1 and np.random.random() < dropout_rate:
+                        N[i, j] = 0.
 
         # To check for disconnected regions in the neighbor graph
         lap = laplacian(N, normed=True)
@@ -137,83 +178,10 @@ class MaximumVarianceUnfolding:
         :return: embedded_data: The embedded form of the data.
         """
 
-        # Number of data points in the set
-        n = data.shape[0]
-
-        # Set the seed
-        np.random.seed(self.seed)
-
-        # Calculate the nearest neighbors of each data point and build a graph
-        N = NearestNeighbors(n_neighbors=k).fit(data).kneighbors_graph(data).todense()
-        N = np.array(N)
-
-        # Randomly drop certain connections.
-        # Not the most efficient way but with this implementation random
-        #  cuts that disconnect the graph will be caught.
-        for i in range(n):
-            for j in range(n):
-                if N[i, j] == 1 and np.random.random() < dropout_rate:
-                    N[i, j] = 0.
-
-        # To check for disconnected regions in the neighbor graph
-        lap = laplacian(N, normed=True)
-        eigvals, _ = np.linalg.eig(lap)
-
-        for e in eigvals:
-            if e == 0. and self.solver_iters is None:
-                raise DisconnectError("DISCONNECTED REGIONS IN NEIGHBORHOOD GRAPH.\n"
-                                      "PLEASE SPECIFY MAX ITERATIONS FOR THE SOLVER")
-
-        # Declare some CVXPy variables
-        # Gramian of the original data
-        P = cp.Constant(data.dot(data.T))
-        # The projection of the Gramian
-        Q = cp.Variable((n, n), PSD=True)
-        # Initialized to zeros
-        Q.value = np.zeros((n, n))
-        # A shorter way to call a vector of 1's
-        ONES = cp.Constant(np.ones((n, 1)))
-        # A variable to keep the notation consistent with the Berkley lecture
-        T = cp.Constant(n)
-
-        # Declare placeholders to get rid of annoying warnings
-        objective = None
-        constraints = []
-
-        # Wikipedia Solution
-        if self.equation == "wikipedia":
-            objective = cp.Maximize(cp.trace(Q))
-
-            constraints = [Q >> 0, cp.sum(Q, axis=1) == 0]
-
-            for i in range(n):
-                for j in range(n):
-                    if N[i, j] == 1:
-                        constraints.append((P[i, i] + P[j, j] - P[i, j] - P[j, i]) -
-                                           (Q[i, i] + Q[j, j] - Q[i, j] - Q[j, i]) == 0)
-
-        # UC Berkley Solution
-        if self.equation == "berkley":
-            objective = cp.Maximize(cp.multiply((1 / T), cp.trace(Q)) -
-                                    cp.multiply((1 / (T * T)), cp.trace(cp.matmul(cp.matmul(Q, ONES), ONES.T))))
-
-            constraints = [Q >> 0, cp.sum(Q, axis=1) == 0]
-            for i in range(n):
-                for j in range(n):
-                    if N[i, j] == 1.:
-                        constraints.append(Q[i, i] - 2 * Q[i, j] + Q[j, j] -
-                                           (P[i, i] - 2 * P[i, j] + P[j, j]) == 0)
-
-        # Solve the problem with the SCS Solver
-        problem = cp.Problem(objective, constraints)
-        # FIXME The solvertol syntax is unique to SCS
-        problem.solve(solver=self.solver,
-                      eps=self.solver_tol,
-                      max_iters=self.solver_iters,
-                      warm_start=self.warm_start)
+        embedded_gramian = self.fit(data, k, dropout_rate)
 
         # Retrieve Q
-        embedded_gramian = Q.value
+        embedded_gramian = embedded_gramian
 
         # Decompose gramian to recover the projection
         eigenvalues, eigenvectors = np.linalg.eig(embedded_gramian)
