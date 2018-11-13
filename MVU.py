@@ -81,13 +81,16 @@ class MaximumVarianceUnfolding:
             l = NearestNeighbors(n_neighbors=2).fit(top_landmarks).kneighbors_graph(new_data).todense()
             l = np.array(l)
 
+            # Reset N to all 0's
             N = np.zeros((n, n))
 
+            # Add all of the intra-landmark connections to the neighborhood graph
             for i in range(self.landmark):
                 for j in range(self.landmark):
                     if L[i, j] == 1.:
                         N[top_landmarks_idxs[i], top_landmarks_idxs[j]] = 1.
 
+            # Add all of the inter-landmark connections to the neighborhood graph
             for i in range(n - self.landmark):
                 for j in range(self.landmark):
                     if l[i, j] == 1.:
@@ -114,7 +117,7 @@ class MaximumVarianceUnfolding:
 
         for e in eigvals:
             if e == 0. and self.solver_iters is None:
-                raise DisconnectError("DISCONNECTED REGIONS IN NEIGHBORHOOD GRAPH.\n"
+                raise DisconnectError("DISCONNECTED REGIONS IN NEIGHBORHOOD GRAPH. "
                                       "PLEASE SPECIFY MAX ITERATIONS FOR THE SOLVER")
 
         # Declare some CVXPy variables
