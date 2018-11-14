@@ -41,6 +41,7 @@ class MaximumVarianceUnfolding:
         self.solver_iters = solver_iters
         self.warm_start = warm_start
         self.seed = seed
+        self.neighborhood_graph = None
 
     def fit(self, data, k, dropout_rate=.2):
         """
@@ -68,6 +69,9 @@ class MaximumVarianceUnfolding:
             for j in range(n):
                 if N[i, j] == 1 and np.random.random() < dropout_rate:
                     N[i, j] = 0.
+
+        # Save the neighborhood graph to be accessed latter
+        self.neighborhood_graph = N
 
         # To check for disconnected regions in the neighbor graph
         lap = laplacian(N, normed=True)
@@ -191,6 +195,7 @@ class LandmarkMaximumVarianceUnfolding:
         self.solver_iters = solver_iters
         self.warm_start = warm_start
         self.seed = seed
+        self.neighborhood_graph = None
 
     def fit(self, data, k):
         """
@@ -226,7 +231,7 @@ class LandmarkMaximumVarianceUnfolding:
         new_data = np.delete(data, top_landmarks_idxs, axis=0)
 
         # Construct a neighborhood graph where each point finds its closest landmark
-        l = NearestNeighbors(n_neighbors=2).fit(top_landmarks).kneighbors_graph(new_data).todense()
+        l = NearestNeighbors(n_neighbors=3).fit(top_landmarks).kneighbors_graph(new_data).todense()
         l = np.array(l)
 
         # Reset N to all 0's
@@ -243,6 +248,9 @@ class LandmarkMaximumVarianceUnfolding:
             for j in range(self.landmarks):
                 if l[i, j] == 1.:
                     N[new_data_idxs[i], top_landmarks_idxs[j]] = 1.
+
+        # Save the neighborhood graph to be accessed latter
+        self.neighborhood_graph = N
 
         # To check for disconnected regions in the neighbor graph
         lap = laplacian(N, normed=True)
