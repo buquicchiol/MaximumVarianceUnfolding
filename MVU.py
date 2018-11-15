@@ -6,8 +6,6 @@ import numpy as np
 from scipy.sparse.csgraph import laplacian
 from sklearn.neighbors import NearestNeighbors
 
-np.set_printoptions(threshold=np.nan)
-
 
 class DisconnectError(Exception):
     """
